@@ -1,0 +1,65 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Metadata:
+  License: MIT
+Description: Provides an example template for integrating custom resources in AWS CloudFormation stacks.
+Parameters:
+  TopicName:
+    Type: String
+    Description: Configures the new sns topic name we want to create.
+  ResourceName:
+    Type: String
+    Description: Provides the custom resource name we want to create using the custom resource provider.
+Resources:
+  SnsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: !Ref TopicName
+      TopicName: !Ref TopicName
+  CfnQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      DelaySeconds: 0
+      MaximumMessageSize: 8192
+      MessageRetentionPeriod: 600
+      QueueName: !Join ["", [ !Ref TopicName, "-queue" ] ]
+      ReceiveMessageWaitTimeSeconds: 0
+      VisibilityTimeout: 10
+  CfnQueueSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Endpoint: !GetAtt [ CfnQueue, Arn ]
+      Protocol: sqs
+      RawMessageDelivery: true
+      TopicArn: !Ref SnsTopic
+  CfnQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref CfnQueue
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: "allow-sns-messages"
+            Effect: "Allow"
+            Principal:
+              AWS: '*'
+            Action: "sqs:SendMessage"
+            Resource: !GetAtt [ CfnQueue, Arn ]
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref SnsTopic
+  CustomResource:
+    DependsOn:
+      - CfnQueuePolicy
+      - CfnQueue
+      - SnsTopic
+      - CfnQueueSubscription
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !Ref SnsTopic
+      CfnTopicName: !Ref TopicName
+      CfnQueueArn: !Ref CfnQueue
+      ResourceName: !Ref ResourceName
+Outputs:
+  CustomResourceResult:
+    Value: !GetAtt [ CustomResource, Result ]

@@ -10,8 +10,7 @@ In order to run this example you need access to a valid AWS account. The experim
 * CloudFormation
 * SNS
 * SQS
-
-You incur an insignificant cost for the SQS queue and SNS topic.
+* EC2 Instance
 
 ## Getting started
 
@@ -31,6 +30,8 @@ aws cloudformation create-stack \
     --capabilities CAPABILITY_NAMED_IAM \
     --parameters ParameterKey=TopicName,ParameterValue=custom-resource-sns-topic \
         ParameterKey=ResourceName,ParameterValue=custom-resource-example \
+        ParameterKey=EnvironmentSshKeyId,ParameterValue=rcosnita-dev \
+        ParameterKey=EnvironmentFriendlyName,ParameterValue=customresource \
     --timeout-in-minutes 10
 
 python customresource/provider.py --cfn-queue <sqs url>

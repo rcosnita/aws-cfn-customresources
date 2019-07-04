@@ -2,14 +2,186 @@ AWSTemplateFormatVersion: '2010-09-09'
 Metadata:
   License: MIT
 Description: Provides an example template for integrating custom resources in AWS CloudFormation stacks.
+Mappings:
+  Images:
+    eu-central-1:
+      seed: ami-0ebe657bc328d4e82
+    eu-west-1:
+      seed: ami-0bbc25e23a7640b9b
+  AvailabilityZones:
+    eu-central-1:
+      az: eu-central-1a
+    eu-west-1:
+      az: eu-west-1a
 Parameters:
+  CidrBlockPrefix:
+    Type: String
+    Description: Allows creators to specify a custom cidr block prefix for the newly created environment.
+    Default: 172.16
+  EnvironmentFriendlyName:
+    Type: String
+    Description: Allows creators to give a friendly name for the newly created environment. This will be used in multiple tags.
+    Default: customresource
+  EnvironmentSshKeyId:
+    Type: String
+    Description: Allows creators to specify the ssh key used for connecting to the environment.
   TopicName:
     Type: String
     Description: Configures the new sns topic name we want to create.
   ResourceName:
     Type: String
     Description: Provides the custom resource name we want to create using the custom resource provider.
+  SeedInstanceType:
+    Type: String
+    Description: Allows creators to specify the type of seed instance we want to use. This can usually be a low resources machine with stable network throughput.
+    Default: m5.large
+  TrustedAdminSources:
+    Type: CommaDelimitedList
+    Description: Provides a list of CIDR blocks allow to access the VPC bastion and seed node management ports (e.g ssh).
+    Default: 0.0.0.0/0
+  S3BucketPath:
+    Type: String
+    Description: A public bucket from where all assets can used during bootstrap can be downloaded.
+    Default: https://rcosnita-opensource.s3.eu-central-1.amazonaws.com/cfn-customresource
 Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Join [ "", [ !Ref CidrBlockPrefix, ".0.0/16" ] ]
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      InstanceTenancy: default
+      Tags:
+        - Key: Name
+          Value: !Ref EnvironmentFriendlyName
+  Igw:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Ref EnvironmentFriendlyName
+  IgwAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref Igw
+      VpcId: !Ref Vpc
+  PublicInternetRtbl:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Join [ "-", [ !Ref EnvironmentFriendlyName, "seed-subnet"] ]
+  PublicInternetRtblDefaultRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref Igw
+      RouteTableId: !Ref PublicInternetRtbl
+  SeedPublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !FindInMap [ "AvailabilityZones", !Ref "AWS::Region", "az" ]
+      CidrBlock: !Join [ "", [ !Ref CidrBlockPrefix, ".250.0/24" ] ]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Join [ "-", [ !Ref EnvironmentFriendlyName, "seed-subnet"] ]
+      VpcId: !Ref Vpc
+  SeedPublicSubnetRouting:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicInternetRtbl
+      SubnetId: !Ref SeedPublicSubnet
+  SeedPublicSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Seed grant access to trusted sources.
+      GroupName: !Join [ "", [ !Ref EnvironmentFriendlyName, "-seed-sg" ] ]
+      SecurityGroupIngress:
+        - CidrIp: !Select [ 0, !Ref TrustedAdminSources ]
+          Description: SSH access from the first trusted location.
+          FromPort: 22
+          IpProtocol: tcp
+          ToPort: 22
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Join [ "", [ !Ref EnvironmentFriendlyName, "-seed-sg" ] ]
+  SeedRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "ec2.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      MaxSessionDuration: 7200
+      Policies:
+        -
+          PolicyName: "seed-image-required-permissions"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action:
+                  - "ec2:*"
+                  - "sqs:*"
+                Resource: "*"
+      RoleName: !Join [ "", [ !Ref EnvironmentFriendlyName, "SeedProfileName" ] ]
+  SeedInstanceRole:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles:
+        - !Ref SeedRole
+  SeedPublicInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      AvailabilityZone: !FindInMap [ "AvailabilityZones", !Ref "AWS::Region", "az" ]
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 60
+      DisableApiTermination: false
+      EbsOptimized: true
+      IamInstanceProfile: !Ref SeedInstanceRole
+      ImageId: !FindInMap [ "Images", !Ref "AWS::Region", "seed" ]
+      InstanceInitiatedShutdownBehavior: stop
+      InstanceType: !Ref SeedInstanceType
+      KeyName: !Ref EnvironmentSshKeyId
+      Monitoring: true
+      SourceDestCheck: true
+      SubnetId: !Ref SeedPublicSubnet
+      SecurityGroupIds:
+        - !Ref SeedPublicSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Join [ "", [ !Ref EnvironmentFriendlyName, "-seed" ] ]
+      Tenancy: default
+      UserData:
+        Fn::Base64:
+          Fn::Join:
+            - "\n"
+            - - "#!/bin/bash"
+              - "set -eox pipefail"
+              - "sudo yum install -y docker wget bash"
+              - "sudo groupadd docker || true"
+              - "sudo usermod -aG docker ec2-user"
+              - "sudo systemctl enable docker"
+              - "sudo systemctl start docker"
+              - "sudo rm -f /home/ec2-user/bootstrap*"
+              - !Join ["", [ "cd /home/ec2-user && sudo wget ", !Ref S3BucketPath, "/bootstrap.sh" ] ]
+              - "sudo chown ec2-user:ec2-user /home/ec2-user/bootstrap.sh"
+              - "sudo chmod u+x /home/ec2-user/bootstrap.sh"
+              - !Join ["", [ "export EnvironmentFriendlyName=", !Ref EnvironmentFriendlyName ] ]
+              - !Join ["", [ "cd /home/ec2-user && sudo -E ./bootstrap.sh ", !Ref S3BucketPath, " ", !Ref CfnQueue ] ]
   SnsTopic:
     Type: AWS::SNS::Topic
     Properties:
@@ -54,6 +226,13 @@ Resources:
       - CfnQueue
       - SnsTopic
       - CfnQueueSubscription
+      - SeedPublicInstance
+      - SeedInstanceRole
+      - PublicInternetRtblDefaultRoute
+      - PublicInternetRtbl
+      - Igw
+      - IgwAttachment
+      - SeedPublicSubnetRouting
     Type: AWS::CloudFormation::CustomResource
     Properties:
       ServiceToken: !Ref SnsTopic
@@ -63,3 +242,5 @@ Resources:
 Outputs:
   CustomResourceResult:
     Value: !GetAtt [ CustomResource, Result ]
+  SeedPublicInstance:
+    Value: !GetAtt [ "SeedPublicInstance", "PublicDnsName" ]

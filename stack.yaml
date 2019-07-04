@@ -242,5 +242,7 @@ Resources:
 Outputs:
   CustomResourceResult:
     Value: !GetAtt [ CustomResource, Result ]
+  CustomResourceResult2:
+    Value: !GetAtt [ CustomResource, Result2 ]
   SeedPublicInstance:
     Value: !GetAtt [ "SeedPublicInstance", "PublicDnsName" ]

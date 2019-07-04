@@ -11,6 +11,7 @@
 import argparse
 import boto3
 from botocore.exceptions import ClientError
+import docker
 import json
 import urllib
 import time
@@ -27,6 +28,8 @@ class CustomResource(object):
     self._cfn_queue = cfn_queue
     self._batch_size = batch_size
     self._visibility_timeout = visibility_timeout
+    self._docker_cli = docker.from_env()
+
     self._handlers = {
       'create': self._create_resource,
       'delete': self._delete_resource
@@ -70,6 +73,11 @@ class CustomResource(object):
   def _create_resource(self, msg_id, msg_body):
     '''Provides the logic for creating a new custom resource.'''
 
+    container = self._docker_cli.containers.run('alpine',
+                                                'echo \'{"Result1": "sample result 1", "Result2": "sample json result 2"}\'',
+                                                detach=False)
+    outputs = self._extract_output(container)
+
     s3_url = msg_body['ResponseURL']
     response = json.dumps({
       'Status': 'SUCCESS',
@@ -77,8 +85,9 @@ class CustomResource(object):
       'StackId': msg_body['StackId'],
       'RequestId': msg_body['RequestId'],
       'LogicalResourceId': msg_body['LogicalResourceId'],
-      "Data": {
-          "Result": "CustomResult"
+      'Data': {
+          'Result': outputs['Result1'],
+          'Result2': outputs['Result2']
       }
     })
 
@@ -110,6 +119,11 @@ class CustomResource(object):
                                 method='PUT')
     with urllib.request.urlopen(req) as f:
       print(f.read().decode('utf-8'))
+
+  def _extract_output(self, resource_logs):
+    '''Extracts the output which must be returned to the cloudformation.'''
+
+    return json.loads(resource_logs)
 
 if __name__ == '__main__':
   parser = argparse.ArgumentParser(

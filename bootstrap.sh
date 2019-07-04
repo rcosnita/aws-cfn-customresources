@@ -22,4 +22,4 @@ EC2_AVAIL_ZONE=$(curl -s http://169.254.169.254/latest/meta-data/placement/avail
 export AWS_DEFAULT_REGION="`echo \"$EC2_AVAIL_ZONE\" | sed 's/[a-z]$//'`"
 
 rm -f nohup.out || true
-nohup python customresource/provider.py --cfn-queue ${QUEUE_URL} &
+nohup python customresource/provider.py --cfn-queue ${QUEUE_URL} --logging-level INFO &

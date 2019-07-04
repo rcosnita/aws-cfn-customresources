@@ -12,6 +12,7 @@ import argparse
 import boto3
 from botocore.exceptions import ClientError
 import docker
+import logging
 import json
 import urllib
 import time
@@ -25,6 +26,7 @@ class CustomResource(object):
     return self._cfn_queue
 
   def __init__(self, cfn_queue, batch_size=10, visibility_timeout=10):
+    logging.info('Starting the custom resource provider')
     self._cfn_queue = cfn_queue
     self._batch_size = batch_size
     self._visibility_timeout = visibility_timeout
@@ -44,6 +46,7 @@ class CustomResource(object):
     * https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/crpg-ref-responses.html
     '''
 
+    logging.info('Starting to consume messages from queue: {}'.format(self._cfn_queue))
     sqs_client = boto3.client('sqs')
     running = True
     msgs = None
@@ -57,27 +60,32 @@ class CustomResource(object):
 
           if 'Messages' in msgs:
             for msg in msgs['Messages']:
+              logging.debug('Processing a new message: {}'.format(msg))
               msg_id = msg['MessageId']
               msg_handle = msg['ReceiptHandle']
               msg_body = json.loads(msg['Body'])
               msg_type = msg_body['RequestType'].lower()
 
               self._handlers[msg_type](msg_id, msg_body)
+
+              logging.debug('Finished processing message: {}'.format(msg_id))
               sqs_client.delete_message(QueueUrl=self._cfn_queue, ReceiptHandle=msg_handle)
 
           time.sleep(5)
       except ClientError as e:
-          raise e
-          return None
+        logging.error(e)
 
   def _create_resource(self, msg_id, msg_body):
     '''Provides the logic for creating a new custom resource.'''
+
+    logging.info('Creating a new resource for message {} with body {}'.format(msg_id, msg_body))
 
     container = self._docker_cli.containers.run('alpine',
                                                 'echo \'{"Result1": "sample result 1", "Result2": "sample json result 2"}\'',
                                                 detach=False)
     outputs = self._extract_output(container)
 
+    logging.info('Notifying cloudformation about successful resource creation {}'.format(msg_id))
     s3_url = msg_body['ResponseURL']
     response = json.dumps({
       'Status': 'SUCCESS',
@@ -93,8 +101,13 @@ class CustomResource(object):
 
     self._submit_response(s3_url, response)
 
+    logging.info('Resource created successfully: {}'.format(msg_id))
+
   def _delete_resource(self, msg_id, msg_body):
     '''Provides the logic for deleting a new custom resource.'''
+
+    logging.info('Deleting existing resource for message {} with body {}'.format(msg_id, msg_body))
+    logging.info('Notifying cloudformation about successful resource deletion {}'.format(msg_id))
 
     s3_url = msg_body['ResponseURL']
     response = json.dumps({
@@ -128,8 +141,14 @@ class CustomResource(object):
 if __name__ == '__main__':
   parser = argparse.ArgumentParser(
     description='Process the command line arguments for creating the custom resource provider.')
+  parser.add_argument('-l', '--logging-level', required=True,
+    help='Specifies the log level used by the custom resource provider.')
   parser.add_argument('-c', '--cfn-queue', required=True,
     help='Specifies the sqs queue to listen to for communicating with the parent CFN stack.')
 
   args = parser.parse_args()
+  log_level = getattr(logging, args.logging_level.upper())
+  logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
+
+  logging.warning('Configured logging to level {}'.format(log_level))
   CustomResource(args.cfn_queue).start()
